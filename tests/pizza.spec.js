@@ -394,14 +394,32 @@ test('not found page', async ({ page }) => {
 
 });
 
-
-test('acces admin login', async ({ page }) => {
+test('access admin login', async ({ page }) => {
   await page.route('*/**/api/auth', async (route) => {
     const loginReq = { email: 'd@jwt.com', password: 'a' };
     const loginResp = { user: { id: 1, name: 'Kai Chen', email: 'd@jwt.com', roles: [{ role: 'admin' }] } };
     expect(route.request().method()).toBe('PUT');
     expect(route.request().postDataJSON()).toMatchObject(loginReq);
     await route.fulfill({ json: loginResp });
+  });
+
+  await page.route('*/**/api/franchise/*', async (route) => {
+    const franchiseAdmin = [
+      {
+        id: 1,
+        name: 'TestFranchise',
+        admins: [
+          {
+            id: 1,
+            name: 'Kai Chen',
+            email: 'd@jwt.com'
+          }
+        ],
+        stores: []
+      }
+    ];
+    expect(route.request().method()).toBe('GET');
+    await route.fulfill({ json: franchiseAdmin });
   });
   
   await page.goto('/');
@@ -412,8 +430,110 @@ test('acces admin login', async ({ page }) => {
   await page.getByPlaceholder('Email address').press('Tab');
   await page.getByPlaceholder('Password').fill('a');
   await page.getByPlaceholder('Password').press('Enter');
-
-
   await page.getByRole('link', { name: 'Admin' }).click();
 
+
+  await page.getByRole('button', { name: 'Add Franchise' }).click();
+  await page.getByPlaceholder('franchise name').click();
+  await page.getByPlaceholder('franchise name').fill('TestFranchise');
+  await page.getByPlaceholder('franchisee admin email').click();
+  await page.getByPlaceholder('franchisee admin email').fill('d@jwt.com');
+  await page.getByRole('button', { name: 'Create' }).click();
+});
+
+
+test('login fail', async ({ page }) => {
+  await page.goto('http://localhost:5173/');
+  await page.getByRole('link', { name: 'Login' }).click();
+  await page.getByPlaceholder('Email address').fill('fakeUser@email.com');
+  await page.getByPlaceholder('Email address').press('Tab');
+  await page.getByPlaceholder('Password').fill('fake');
+  await page.getByRole('button', { name: 'Login' }).click();
+  await expect(page.getByRole('main')).toContainText('{"code":500,"message":"Failed to fetch"}');
+});
+
+
+test('purchase fail due to unauthorized order', async ({ page }) => {
+  await page.route('*/**/api/order/menu', async (route) => {
+    const menuRes = [
+      { id: 1, title: 'Veggie', image: 'pizza1.png', price: 0.0038, description: 'A garden of delight' },
+      { id: 2, title: 'Pepperoni', image: 'pizza2.png', price: 0.0042, description: 'Spicy treat' },
+    ];
+    expect(route.request().method()).toBe('GET');
+    await route.fulfill({ json: menuRes });
+  });
+
+  await page.route('*/**/api/franchise', async (route) => {
+    const franchiseRes = [
+      {
+        id: 2,
+        name: 'LotaPizza',
+        stores: [
+          { id: 4, name: 'Lehi' },
+          { id: 5, name: 'Springville' },
+          { id: 6, name: 'American Fork' },
+        ],
+      },
+      { id: 3, name: 'PizzaCorp', stores: [{ id: 7, name: 'Spanish Fork' }] },
+      { id: 4, name: 'topSpot', stores: [] },
+    ];
+    expect(route.request().method()).toBe('GET');
+    await route.fulfill({ json: franchiseRes });
+  });
+
+  await page.route('*/**/api/auth', async (route) => {
+    const loginReq = { email: 'd@jwt.com', password: 'a' };
+    const loginRes = { user: { id: 3, name: 'Kai Chen', email: 'd@jwt.com', roles: [{ role: 'diner' }] }, token: 'abcdef' };
+    expect(route.request().method()).toBe('PUT');
+    expect(route.request().postDataJSON()).toMatchObject(loginReq);
+    await route.fulfill({ json: loginRes });
+  });
+
+  await page.route('*/**/api/order', async (route) => {
+    const orderReq = {
+      items: [
+        { menuId: 1, description: 'Veggie', price: 0.0038 },
+        { menuId: 2, description: 'Pepperoni', price: 0.0042 },
+      ],
+      storeId: '4',
+      franchiseId: 2,
+    };
+    const errorRes = { message: 'Sad...no pizza for you.' };  
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().postDataJSON()).toMatchObject(orderReq);
+    await route.fulfill({
+      status: 401,
+      json: errorRes,
+    });
+  });
+
+  await page.goto('/');
+
+  // Go to order page
+  await page.getByRole('button', { name: 'Order now' }).click();
+
+  // Create order
+  await expect(page.locator('h2')).toContainText('Awesome is a click away');
+  await page.getByRole('combobox').selectOption('4');
+  await page.getByRole('link', { name: 'Image Description Veggie A' }).click();
+  await page.getByRole('link', { name: 'Image Description Pepperoni' }).click();
+  await expect(page.locator('form')).toContainText('Selected pizzas: 2');
+  await page.getByRole('button', { name: 'Checkout' }).click();
+
+  // Login
+  await page.getByPlaceholder('Email address').click();
+  await page.getByPlaceholder('Email address').fill('d@jwt.com');
+  await page.getByPlaceholder('Email address').press('Tab');
+  await page.getByPlaceholder('Password').fill('a');
+  await page.getByRole('button', { name: 'Login' }).click();
+
+  // Attempt payment and expect failure message
+  await expect(page.getByRole('main')).toContainText('Send me those 2 pizzas right now!');
+  await expect(page.locator('tbody')).toContainText('Veggie');
+  await expect(page.locator('tbody')).toContainText('Pepperoni');
+  await expect(page.locator('tfoot')).toContainText('0.008 ₿');
+  await page.getByRole('button', { name: 'Pay now' }).click();
+
+  // Expect error message due to failure
+  await expect(page.getByText('Sad...no pizza for you.')).toBeVisible();  // Check that the error message is shown
 });
