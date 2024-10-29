@@ -144,6 +144,8 @@ export default function App() {
 
   useEffect(() => {
     window.HSStaticMethods.autoInit();
+
+empty
   }, [location.pathname]);
   //...
 ```
